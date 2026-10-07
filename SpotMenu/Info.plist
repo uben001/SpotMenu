@@ -20,6 +20,8 @@
 	<!-- Sparkle Update Configuration -->
 	<key>SUPublicEDKey</key>
 	<string>BzDKlhTkBhiTizw1GoS4Lxq7rWs7fh2vZuHz3OojDuE=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/kmikiy/SpotMenu/master/appcast.xml</string>
 	<!-- Enable Sparkle's Installer XPC Service for sandboxed updates -->
