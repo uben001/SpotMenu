@@ -11,6 +11,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var playbackModel: PlaybackModel!
     var menuBarPreferencesModel = MenuBarPreferencesModel()
     var popoverManager: PopoverManager!
+    var hoverController: StatusItemHoverController?
     var preferencesWindow: NSWindow?
     var eventMonitor: Any?
     var menuBarPreferencesModelCancellable: AnyCancellable?
@@ -72,6 +73,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             toggleAction: #selector(togglePopover),
             target: self
         )
+
+        if let button = statusItem.button {
+            hoverController = StatusItemHoverController(
+                button: button,
+                popoverManager: popoverManager,
+                isEnabled: { [weak self] in
+                    self?.menuBarPreferencesModel.openOnHover ?? false
+                }
+            )
+        }
 
         setupKeyboardShortcuts()
         updateStatusItem()
