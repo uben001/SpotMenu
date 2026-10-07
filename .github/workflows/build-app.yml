@@ -1,0 +1,48 @@
+name: Build SpotMenu app
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build (unsigned / ad-hoc)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project SpotMenu.xcodeproj \
+            -scheme SpotMenu \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build | tee build.log | grep -E "error:|warning: .*StatusItem|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Zip app
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --keepParent SpotMenu.app "$GITHUB_WORKSPACE/SpotMenu.app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpotMenu-app
+          path: SpotMenu.app.zip
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
