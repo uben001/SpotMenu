@@ -115,6 +115,33 @@ struct MenuBarPreferencesView: View {
 
                 Form {
                     Section {
+                        Toggle("Animated Equalizer", isOn: $model.animateEqualizer)
+                        Toggle("Scroll Long Titles", isOn: $model.scrollLongText)
+                        Toggle("Animate Track Changes", isOn: $model.animateTrackChange)
+                        Toggle("Pulse on Play / Pause", isOn: $model.pulseOnPlayPause)
+                    } header: {
+                        Text("Animations")
+                    } footer: {
+                        Text("The equalizer replaces the ♫ playing icon (requires Show Playing Icon). Animations stop while music is paused.")
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+
+                Form {
+                    Section {
+                        Toggle("Open Player on Hover", isOn: $model.openOnHover)
+                    } header: {
+                        Text("Behavior")
+                    } footer: {
+                        Text("Show the album art and controls when you hover the menu bar item. Clicking still works and keeps the player open until you click elsewhere.")
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+
+                Form {
+                    Section {
                         Toggle("Compact View", isOn: $model.compactView)
 
                         VStack(alignment: .leading, spacing: 8) {
