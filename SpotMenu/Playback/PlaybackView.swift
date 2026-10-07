@@ -8,18 +8,22 @@ struct PlaybackView: View {
     @State private var isHovering = false
     @Environment(\.colorScheme) private var systemColorScheme
 
+    /// Base layout size the controls were designed for; they scale from it.
+    private let baseSize: CGFloat = 300
+    private var size: CGFloat { CGFloat(preferences.playerSize) }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16)
                 .fill(.ultraThinMaterial)
-                .frame(width: 300, height: 300)
+                .frame(width: size, height: size)
 
             content
                 .clipShape(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
         }
-        .frame(width: 300, height: 300)
+        .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -42,7 +46,7 @@ struct PlaybackView: View {
                     image
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 300, height: 300)
+                        .frame(width: size, height: size)
                         .clipped()
                         .blur(radius: blurRadius)
                         .overlay(overlayColor)
@@ -52,7 +56,7 @@ struct PlaybackView: View {
             fallbackImage
                 .resizable()
                 .scaledToFill()
-                .frame(width: 300, height: 300)
+                .frame(width: size, height: size)
                 .clipped()
                 .blur(radius: blurRadius)
                 .overlay(overlayColor)
@@ -67,13 +71,16 @@ struct PlaybackView: View {
                     )
                     .frame(width: 100, height: 100)
             }
-            .frame(width: 300, height: 300)
+            .frame(width: size, height: size)
             .blur(radius: blurRadius)
             .overlay(overlayColor)
         }
 
         if isHovering {
             controlsOverlay
+                .frame(width: baseSize, height: baseSize)
+                .scaleEffect(size / baseSize)
+                .frame(width: size, height: size)
         }
     }
 
