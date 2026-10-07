@@ -57,7 +57,7 @@ struct EqualizerBarsView: View {
     private func bars(_ height: @escaping (Int) -> CGFloat) -> some View {
         HStack(alignment: .bottom, spacing: Self.spacing(for: barWidth)) {
             ForEach(0..<max(barCount, 1), id: \.self) { index in
-                RoundedRectangle(cornerRadius: barWidth / 2)
+                Rectangle()
                     .frame(width: barWidth, height: height(index))
             }
         }
