@@ -3,43 +3,85 @@ import SwiftUI
 
 // MARK: - Equalizer bars
 
-/// Small bouncing bars shown while music plays. They settle to a flat line
-/// when playback is paused, and the timeline stops ticking so no CPU is used.
+/// Bouncing bars in the menu bar. When real audio is available they follow
+/// the music (driven by AudioSpectrumMonitor); otherwise they fall back to a
+/// simulated bounce. They settle to a flat line when playback is paused.
 struct EqualizerBarsView: View {
     let isPlaying: Bool
+    let barCount: Int
+    let barWidth: CGFloat
+    let followMusic: Bool
 
-    static let width: CGFloat = 12
-    private let barCount = 4
-    private let barWidth: CGFloat = 2
-    private let barSpacing: CGFloat = 1.3
-    private let maxHeight: CGFloat = 12
-    private let restHeight: CGFloat = 2.5
+    @ObservedObject private var monitor = AudioSpectrumMonitor.shared
 
-    // Each bar gets its own speed and phase so they don't move in lockstep.
-    private let speeds: [Double] = [5.3, 7.1, 6.2, 8.4]
-    private let phases: [Double] = [0.0, 1.4, 2.7, 0.8]
+    static let maxHeight: CGFloat = 14
+    private let restHeight: CGFloat = 2
+
+    static func spacing(for barWidth: CGFloat) -> CGFloat {
+        max(1, (barWidth * 0.6).rounded(.toNearestOrAwayFromZero))
+    }
+
+    static func width(barCount: Int, barWidth: CGFloat) -> CGFloat {
+        let n = CGFloat(max(barCount, 1))
+        return n * barWidth + (n - 1) * spacing(for: barWidth)
+    }
+
+    // Simulated mode: each bar gets its own speed and phase.
+    private let speeds: [Double] = [5.3, 7.1, 6.2, 8.4, 5.9, 7.7, 6.6, 8.9, 5.6, 7.3]
+    private let phases: [Double] = [0.0, 1.4, 2.7, 0.8, 2.1, 0.3, 1.9, 2.4, 1.1, 0.6]
+
+    private var usingRealAudio: Bool {
+        followMusic && isPlaying && monitor.isReceiving
+    }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !isPlaying)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .bottom, spacing: barSpacing) {
-                ForEach(0..<barCount, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: barWidth / 2)
-                        .frame(width: barWidth, height: height(for: index, at: t))
+        Group {
+            if usingRealAudio {
+                bars { index in realHeight(for: index) }
+                    .animation(.linear(duration: 1.0 / 30.0), value: monitor.levels)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !isPlaying)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    bars { index in simulatedHeight(for: index, at: t) }
                 }
             }
-            .frame(width: Self.width, height: maxHeight, alignment: .bottom)
         }
+        .frame(
+            width: Self.width(barCount: barCount, barWidth: barWidth),
+            height: Self.maxHeight,
+            alignment: .bottom
+        )
         .animation(.easeOut(duration: 0.3), value: isPlaying)
     }
 
-    private func height(for index: Int, at t: Double) -> CGFloat {
+    private func bars(_ height: @escaping (Int) -> CGFloat) -> some View {
+        HStack(alignment: .bottom, spacing: Self.spacing(for: barWidth)) {
+            ForEach(0..<max(barCount, 1), id: \.self) { index in
+                RoundedRectangle(cornerRadius: barWidth / 2)
+                    .frame(width: barWidth, height: height(index))
+            }
+        }
+    }
+
+    /// Maps the monitor's bands onto however many bars are shown.
+    private func realHeight(for index: Int) -> CGFloat {
+        let levels = monitor.levels
+        guard !levels.isEmpty else { return restHeight }
+        let count = max(barCount, 1)
+        let start = index * levels.count / count
+        let end = max(start + 1, (index + 1) * levels.count / count)
+        let slice = levels[start..<min(end, levels.count)]
+        let value = slice.reduce(0, +) / Float(slice.count)
+        return restHeight + CGFloat(value) * (Self.maxHeight - restHeight)
+    }
+
+    private func simulatedHeight(for index: Int, at t: Double) -> CGFloat {
         guard isPlaying else { return restHeight }
         let speed = speeds[index % speeds.count]
         let phase = phases[index % phases.count]
         // Two layered sine waves give an organic, non-repeating bounce in 0...1.
         let value = (sin(t * speed + phase) + sin(t * speed * 0.53 + phase * 2)) / 4 + 0.5
-        return restHeight + CGFloat(value) * (maxHeight - restHeight)
+        return restHeight + CGFloat(value) * (Self.maxHeight - restHeight)
     }
 }
 
