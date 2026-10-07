@@ -68,8 +68,13 @@ struct StatusItemView: View {
             }
 
             if showEqualizer {
-                EqualizerBarsView(isPlaying: model.isPlaying)
-                    .pulsing(pulse)
+                EqualizerBarsView(
+                    isPlaying: model.isPlaying,
+                    barCount: prefs.equalizerBarCount,
+                    barWidth: CGFloat(prefs.equalizerBarWidth),
+                    followMusic: prefs.equalizerFollowsMusic
+                )
+                .pulsing(pulse)
             } else if showNote {
                 Text("♫").font(.system(size: 13))
                     .pulsing(pulse)
@@ -163,7 +168,12 @@ struct StatusItemView: View {
         var used: CGFloat = 0
         if options.showIcon { used += appIconWidth + spacing }
         if options.showHeartIcon { used += heartIconWidth + spacing }
-        if showEqualizer { used += EqualizerBarsView.width + spacing }
+        if showEqualizer {
+            used += EqualizerBarsView.width(
+                barCount: menuBarPreferencesModel.equalizerBarCount,
+                barWidth: CGFloat(menuBarPreferencesModel.equalizerBarWidth)
+            ) + spacing
+        }
         else if showNote { used += noteIconWidth + spacing }
         return max(menuBarPreferencesModel.maxStatusItemWidth - used, 20)
     }
