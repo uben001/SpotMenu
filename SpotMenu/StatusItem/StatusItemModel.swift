@@ -66,6 +66,17 @@ class StatusItemModel: ObservableObject {
         )
     }
 
+    /// Full "Artist - Title" label without truncation (used by scrolling text).
+    func buildFullText(displayOptions: DisplayOptions) -> String {
+        let artistText = displayOptions.showArtist ? artist : nil
+        let titleText = displayOptions.showTitle ? title : nil
+        return [artistText, titleText]
+            .compactMap { $0 }
+            .joined(
+                separator: (artistText != nil && titleText != nil) ? " - " : ""
+            )
+    }
+
     func buildText(
         displayOptions: DisplayOptions,
         font: NSFont
