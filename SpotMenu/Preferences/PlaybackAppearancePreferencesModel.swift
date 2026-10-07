@@ -53,6 +53,13 @@ class PlaybackAppearancePreferencesModel: ObservableObject {
         }
     }
 
+    /// Width/height of the pop-up player (album art), in points.
+    @Published var playerSize: Double {
+        didSet {
+            UserDefaults.standard.set(playerSize, forKey: "playback.playerSize")
+        }
+    }
+
     enum ForegroundColorOption: String, CaseIterable, Identifiable {
         case white, black
         var id: String { rawValue }
@@ -91,5 +98,7 @@ class PlaybackAppearancePreferencesModel: ObservableObject {
             ?? 0.3
         likingEnabled =
             defaults.object(forKey: "playback.likingEnabled") as? Bool ?? true
+        playerSize = min(520, max(200,
+            defaults.object(forKey: "playback.playerSize") as? Double ?? 300))
     }
 }
