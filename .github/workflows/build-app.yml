@@ -27,8 +27,26 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            ENABLE_HARDENED_RUNTIME=NO \
             build | tee build.log | grep -E "error:|warning: .*StatusItem|BUILD (SUCCEEDED|FAILED)" || true
           grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Check signature and launch test
+        run: |
+          APP=build/Build/Products/Release/SpotMenu.app
+          codesign --verify --deep --strict --verbose=2 "$APP" || echo "codesign verify reported a problem (see above)"
+          codesign -dv "$APP" 2>&1 | grep -E "Signature|TeamIdentifier|flags"
+          "$APP/Contents/MacOS/SpotMenu" > launch.log 2>&1 &
+          PID=$!
+          sleep 8
+          if kill -0 $PID 2>/dev/null; then
+            echo "SpotMenu is still running after 8s: launch OK"
+            kill $PID
+          else
+            echo "SpotMenu exited during launch:"
+            cat launch.log
+            exit 1
+          fi
 
       - name: Zip app
         run: |
