@@ -38,6 +38,13 @@ class PopoverManager {
             button.convert(button.bounds, to: nil)
         )
 
+        if let fitting = window.contentView?.fittingSize,
+            fitting.width > 0, fitting.height > 0,
+            fitting != window.frame.size
+        {
+            window.setContentSize(fitting)
+        }
+
         let popoverSize = window.frame.size
 
         let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
