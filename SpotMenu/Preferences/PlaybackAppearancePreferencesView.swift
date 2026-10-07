@@ -67,6 +67,27 @@ struct PlaybackAppearancePreferencesView: View {
 
                 Form {
                     Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Player Size")
+                                Spacer()
+                                Text("\(Int(model.playerSize)) pt")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                            }
+                            Slider(value: $model.playerSize, in: 200...520, step: 10)
+                        }
+                    } header: {
+                        Text("Size")
+                    } footer: {
+                        Text("How big the album art and controls appear when you hover or click the menu bar item. Default is 300 pt.")
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
+
+                Form {
+                    Section {
                         HStack {
                             Spacer()
                             PlaybackView(
