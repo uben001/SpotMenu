@@ -161,6 +161,22 @@ class MenuBarPreferencesModel: ObservableObject {
         }
     }
 
+    @Published var equalizerFollowsMusic: Bool {
+        didSet {
+            UserDefaults.standard.set(equalizerFollowsMusic, forKey: "menuBar.equalizerFollowsMusic")
+        }
+    }
+    @Published var equalizerBarCount: Int {
+        didSet {
+            UserDefaults.standard.set(equalizerBarCount, forKey: "menuBar.equalizerBarCount")
+        }
+    }
+    @Published var equalizerBarWidth: Double {
+        didSet {
+            UserDefaults.standard.set(equalizerBarWidth, forKey: "menuBar.equalizerBarWidth")
+        }
+    }
+
     var isTextVisible: Bool {
         return showArtist || showTitle
     }
@@ -202,6 +218,13 @@ class MenuBarPreferencesModel: ObservableObject {
             defaults.object(forKey: "menuBar.pulseOnPlayPause") as? Bool ?? true
         openOnHover =
             defaults.object(forKey: "menuBar.openOnHover") as? Bool ?? true
+
+        equalizerFollowsMusic =
+            defaults.object(forKey: "menuBar.equalizerFollowsMusic") as? Bool ?? true
+        equalizerBarCount = min(10, max(3,
+            defaults.object(forKey: "menuBar.equalizerBarCount") as? Int ?? 6))
+        equalizerBarWidth = min(5, max(1.5,
+            defaults.object(forKey: "menuBar.equalizerBarWidth") as? Double ?? 3))
 
         fontWeightCompactTop = MenuBarFontWeight(
             rawValue: defaults.string(forKey: "menuBar.fontWeightCompactTop") ?? "medium"
