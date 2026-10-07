@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
@@ -14,6 +15,20 @@ enum MenuBarFontWeight: String, CaseIterable {
     case black = "black"
 
     var fontWeight: Font.Weight {
+        switch self {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        }
+    }
+
+    var nsFontWeight: NSFont.Weight {
         switch self {
         case .ultraLight: return .ultraLight
         case .thin: return .thin
@@ -120,6 +135,32 @@ class MenuBarPreferencesModel: ObservableObject {
         }
     }
 
+    @Published var animateEqualizer: Bool {
+        didSet {
+            UserDefaults.standard.set(animateEqualizer, forKey: "menuBar.animateEqualizer")
+        }
+    }
+    @Published var scrollLongText: Bool {
+        didSet {
+            UserDefaults.standard.set(scrollLongText, forKey: "menuBar.scrollLongText")
+        }
+    }
+    @Published var animateTrackChange: Bool {
+        didSet {
+            UserDefaults.standard.set(animateTrackChange, forKey: "menuBar.animateTrackChange")
+        }
+    }
+    @Published var pulseOnPlayPause: Bool {
+        didSet {
+            UserDefaults.standard.set(pulseOnPlayPause, forKey: "menuBar.pulseOnPlayPause")
+        }
+    }
+    @Published var openOnHover: Bool {
+        didSet {
+            UserDefaults.standard.set(openOnHover, forKey: "menuBar.openOnHover")
+        }
+    }
+
     var isTextVisible: Bool {
         return showArtist || showTitle
     }
@@ -150,6 +191,17 @@ class MenuBarPreferencesModel: ObservableObject {
         hideTitleWhenPaused =
             defaults.object(forKey: "menuBar.hideTitleWhenPaused") as? Bool
             ?? false
+
+        animateEqualizer =
+            defaults.object(forKey: "menuBar.animateEqualizer") as? Bool ?? true
+        scrollLongText =
+            defaults.object(forKey: "menuBar.scrollLongText") as? Bool ?? true
+        animateTrackChange =
+            defaults.object(forKey: "menuBar.animateTrackChange") as? Bool ?? true
+        pulseOnPlayPause =
+            defaults.object(forKey: "menuBar.pulseOnPlayPause") as? Bool ?? true
+        openOnHover =
+            defaults.object(forKey: "menuBar.openOnHover") as? Bool ?? true
 
         fontWeightCompactTop = MenuBarFontWeight(
             rawValue: defaults.string(forKey: "menuBar.fontWeightCompactTop") ?? "medium"
