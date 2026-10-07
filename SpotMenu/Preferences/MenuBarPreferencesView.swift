@@ -5,6 +5,7 @@ struct MenuBarPreferencesView: View {
     @ObservedObject var playbackModel: PlaybackModel
     @ObservedObject var musicPlayerPreferencesModel: MusicPlayerPreferencesModel
     @State private var isSpotifyAuthenticated = false
+    @ObservedObject private var audioMonitor = AudioSpectrumMonitor.shared
 
     @StateObject private var previewModel: StatusItemModel = {
         let model = StatusItemModel()
@@ -127,6 +128,10 @@ struct MenuBarPreferencesView: View {
                                     }
                                 }
                             ))
+
+                            if model.equalizerFollowsMusic {
+                                audioStatusRow
+                            }
 
                             Stepper(
                                 "Equalizer Bars: \(model.equalizerBarCount)",
@@ -265,6 +270,46 @@ struct MenuBarPreferencesView: View {
         .onAppear {
             SpotifyAuthManager.shared.checkAuthenticationStatus {
                 self.isSpotifyAuthenticated = $0
+            }
+        }
+    }
+}
+
+extension MenuBarPreferencesView {
+    /// Shows whether the equalizer is really hearing the music.
+    @ViewBuilder
+    var audioStatusRow: some View {
+        let (color, text): (Color, String) = {
+            if audioMonitor.isReceiving {
+                return (.green, "Listening: the bars are following the music.")
+            } else if audioMonitor.permissionDenied {
+                return (.red, "No permission. Turn on SpotMenu under Screen & System Audio Recording, then quit and reopen SpotMenu.")
+            } else if let error = audioMonitor.lastError {
+                return (.orange, "Not listening: \(error)")
+            } else {
+                return (.secondary, "Not listening yet. Play a song in Spotify or Music.")
+            }
+        }()
+
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if !audioMonitor.isReceiving {
+                Button("Open Settings") {
+                    if let url = URL(
+                        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+                    ) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
             }
         }
     }
