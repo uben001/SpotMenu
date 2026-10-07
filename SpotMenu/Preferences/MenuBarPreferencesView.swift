@@ -116,13 +116,43 @@ struct MenuBarPreferencesView: View {
                 Form {
                     Section {
                         Toggle("Animated Equalizer", isOn: $model.animateEqualizer)
+
+                        if model.animateEqualizer {
+                            Toggle("Equalizer Follows the Music", isOn: Binding(
+                                get: { model.equalizerFollowsMusic },
+                                set: { newValue in
+                                    model.equalizerFollowsMusic = newValue
+                                    if newValue {
+                                        AudioSpectrumMonitor.shared.resetPermissionState()
+                                    }
+                                }
+                            ))
+
+                            Stepper(
+                                "Equalizer Bars: \(model.equalizerBarCount)",
+                                value: $model.equalizerBarCount,
+                                in: 3...10
+                            )
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("Bar Thickness")
+                                    Spacer()
+                                    Text(String(format: "%.1f pt", model.equalizerBarWidth))
+                                        .foregroundStyle(.secondary)
+                                        .font(.caption)
+                                }
+                                Slider(value: $model.equalizerBarWidth, in: 1.5...5, step: 0.5)
+                            }
+                        }
+
                         Toggle("Scroll Long Titles", isOn: $model.scrollLongText)
                         Toggle("Animate Track Changes", isOn: $model.animateTrackChange)
                         Toggle("Pulse on Play / Pause", isOn: $model.pulseOnPlayPause)
                     } header: {
                         Text("Animations")
                     } footer: {
-                        Text("The equalizer replaces the ♫ playing icon (requires Show Playing Icon). Animations stop while music is paused.")
+                        Text("The equalizer replaces the ♫ playing icon (requires Show Playing Icon). To follow the music, SpotMenu listens to Spotify / Apple Music audio only; macOS will ask for Screen & System Audio Recording permission and shows its recording indicator while music plays. Animations stop while music is paused.")
                     }
                 }
                 .formStyle(.grouped)
