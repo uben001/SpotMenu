@@ -24,6 +24,8 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
     @Published private(set) var isReceiving = false
     /// True if macOS refused screen & system audio recording permission.
     @Published private(set) var permissionDenied = false
+    /// Last capture error, for the status line in Preferences.
+    @Published private(set) var lastError: String?
 
     private var stream: SCStream?
     private var isStarting = false
@@ -36,18 +38,22 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
     private let audioQueue = DispatchQueue(label: "SpotMenu.AudioSpectrum")
 
     // FFT state (only touched on audioQueue)
-    private let fftSize = 1024
-    private let log2n = vDSP_Length(10)
+    // 2048 samples at 48 kHz = ~23 Hz per bin: enough detail to separate
+    // kick drum / bass from the rest.
+    private let fftSize = 2048
+    private let log2n = vDSP_Length(11)
     private var fftSetup: FFTSetup?
     private var window: [Float]
     private var sampleRing: [Float]
     private var smoothed: [Float] = Array(repeating: 0, count: bandCount)
     private var peakDb: Float = -30
+    private var bassPeakDb: Float = -30
+    private var bassLevel: Float = 0
     private var sampleRate: Double = 48_000
 
     private override init() {
-        window = [Float](repeating: 0, count: 1024)
-        sampleRing = [Float](repeating: 0, count: 1024)
+        window = [Float](repeating: 0, count: 2048)
+        sampleRing = [Float](repeating: 0, count: 2048)
         super.init()
         fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
@@ -79,6 +85,7 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
     /// Lets the user retry after granting permission in System Settings.
     func resetPermissionState() {
         permissionDenied = false
+        lastError = nil
         lastStartAttempt = .distantPast
     }
 
@@ -121,6 +128,7 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: audioQueue)
                 try await stream.startCapture()
                 self.stream = stream
+                self.lastError = nil
                 self.sampleRate = Double(config.sampleRate)
                 self.startSilenceWatch()
             } catch {
@@ -128,6 +136,7 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
                 if (error as NSError).code == SCStreamError.Code.userDeclined.rawValue {
                     self.permissionDenied = true
                 }
+                self.lastError = error.localizedDescription
                 NSLog("SpotMenu audio capture failed: \(error)")
             }
         }
@@ -146,6 +155,7 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
             guard let self else { return }
             self.smoothed = Array(repeating: 0, count: Self.bandCount)
             self.sampleRing = [Float](repeating: 0, count: self.fftSize)
+            self.bassLevel = 0
         }
     }
 
@@ -238,40 +248,57 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
             }
         }
 
-        // Group bins into log-spaced bands from ~50 Hz to ~14 kHz.
         let binHz = Float(sampleRate) / Float(n)
-        let lowHz: Float = 50
-        let highHz: Float = 14_000
-        let bands = Self.bandCount
-        var bandDb = [Float](repeating: -140, count: bands)
-
-        for b in 0..<bands {
-            let f0 = lowHz * powf(highHz / lowHz, Float(b) / Float(bands))
-            let f1 = lowHz * powf(highHz / lowHz, Float(b + 1) / Float(bands))
-            var i0 = Int(f0 / binHz)
-            var i1 = Int(f1 / binHz)
+        func energy(_ lowHz: Float, _ highHz: Float) -> Float {
+            var i0 = Int(lowHz / binHz)
+            var i1 = Int(highHz / binHz)
             i0 = max(1, min(i0, half - 1))
             i1 = max(i0 + 1, min(i1, half))
             var sum: Float = 0
             for i in i0..<i1 { sum += mags[i] }
-            let avg = sum / Float(i1 - i0)
-            // Gentle tilt so treble bands aren't always tiny.
-            bandDb[b] = 10 * log10f(avg + 1e-12) + Float(b) * 2.0
+            return sum / Float(i1 - i0)
         }
 
-        let loudest = bandDb.max() ?? -140
-        let silent = loudest < -70
+        // 1) Bass / kick envelope (40-160 Hz). This is what the bars mainly
+        //    follow, so every kick drum and bass note makes them jump.
+        let bassDb = 10 * log10f(energy(40, 160) + 1e-12)
+        bassPeakDb = max(bassDb, bassPeakDb - 0.12)
+        let bassRange: Float = 20
+        let bassTarget: Float = max(0, min(1, (bassDb - (bassPeakDb - bassRange)) / bassRange))
+        // Snappy: jump up instantly on a hit, fall back quickly between hits.
+        let bassK: Float = bassTarget > bassLevel ? 0.85 : 0.30
+        bassLevel += (bassTarget - bassLevel) * bassK
 
-        // Adaptive range: follow the loudest band, decay slowly.
-        peakDb = max(loudest, peakDb - 0.15)
-        let range: Float = 42
+        // 2) Spectrum bands, log-spaced from 30 Hz to 8 kHz (most bars sit in
+        //    the low end), used for a bit of variety between bars.
+        let lowHz: Float = 30
+        let highHz: Float = 8_000
+        let bands = Self.bandCount
+        var bandDb = [Float](repeating: -140, count: bands)
+        for b in 0..<bands {
+            let f0 = lowHz * powf(highHz / lowHz, Float(b) / Float(bands))
+            let f1 = lowHz * powf(highHz / lowHz, Float(b + 1) / Float(bands))
+            bandDb[b] = 10 * log10f(energy(f0, f1) + 1e-12)
+        }
+
+        let loudest = max(bandDb.max() ?? -140, bassDb)
+        let silent = loudest < -70
+        if silent { bassLevel = 0 }
+
+        peakDb = max(bandDb.max() ?? -140, peakDb - 0.15)
+        let range: Float = 36
         let floorDb = peakDb - range
 
         for b in 0..<bands {
-            let target: Float = silent ? 0 : max(0, min(1, (bandDb[b] - floorDb) / range))
+            let bandLevel: Float = max(0, min(1, (bandDb[b] - floorDb) / range))
+            // Bass drives every bar (strongest on the left/low bars);
+            // the band's own level adds some movement on top.
+            let bassWeight: Float = 1.0 - 0.35 * Float(b) / Float(bands - 1)
+            let mixed = 0.65 * bassLevel * bassWeight + 0.35 * bandLevel
+            let target: Float = silent ? 0 : max(0, min(1, mixed))
             let current = smoothed[b]
-            // Fast attack, slower release, like a real VU meter.
-            let k: Float = target > current ? 0.65 : 0.18
+            // Fast attack, quick release so the beat reads clearly.
+            let k: Float = target > current ? 0.8 : 0.28
             smoothed[b] = current + (target - current) * k
         }
 
