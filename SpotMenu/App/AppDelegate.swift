@@ -158,6 +158,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemModel.isLiked = playbackModel.isLiked
         statusItemModel.playerIconName = playbackModel.playerIconName
 
+        let prefs = menuBarPreferencesModel
+        AudioSpectrumMonitor.shared.update(
+            shouldRun: playbackModel.isPlaying
+                && prefs.animateEqualizer
+                && prefs.equalizerFollowsMusic
+                && prefs.showIsPlayingIcon
+        )
+
         // Update width immediately and synchronously after model changes
         StatusItemConfigurator.updateWidth(
             statusItem: statusItem,
