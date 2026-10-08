@@ -119,6 +119,12 @@ struct MenuBarPreferencesView: View {
                         Toggle("Animated Equalizer", isOn: $model.animateEqualizer)
 
                         if model.animateEqualizer {
+                            Picker("Equalizer Style", selection: $model.equalizerMirrored) {
+                                Text("Bottom Up").tag(false)
+                                Text("Mirrored").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+
                             Toggle("Equalizer Follows the Music", isOn: Binding(
                                 get: { model.equalizerFollowsMusic },
                                 set: { newValue in
