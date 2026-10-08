@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>This app needs permission to control Spotify / Apple Music using AppleScript.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>SpotMenu listens to the sound from Spotify / Apple Music (nothing else) so the menu bar equalizer can move with the music. Nothing is recorded or saved.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
