@@ -139,6 +139,14 @@ struct MenuBarPreferencesView: View {
                                 in: 3...10
                             )
 
+                            if model.equalizerFollowsMusic {
+                                Stepper(
+                                    "Bass Bars (random spots): \(min(model.equalizerBassBars, model.equalizerBarCount))",
+                                    value: $model.equalizerBassBars,
+                                    in: 0...model.equalizerBarCount
+                                )
+                            }
+
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text("Bar Thickness")
@@ -157,7 +165,7 @@ struct MenuBarPreferencesView: View {
                     } header: {
                         Text("Animations")
                     } footer: {
-                        Text("The equalizer replaces the ♫ playing icon (requires Show Playing Icon). To follow the music, SpotMenu listens to Spotify / Apple Music audio only; macOS will ask for Screen & System Audio Recording permission and shows its recording indicator while music plays. Animations stop while music is paused.")
+                        Text("The equalizer replaces the ♫ playing icon (requires Show Playing Icon). To follow the music, SpotMenu listens to Spotify / Apple Music sound only (no screen access); macOS asks once for System Audio Recording permission and shows its recording indicator while music plays. Animations stop while music is paused.")
                     }
                 }
                 .formStyle(.grouped)
@@ -281,9 +289,9 @@ extension MenuBarPreferencesView {
     var audioStatusRow: some View {
         let (color, text): (Color, String) = {
             if audioMonitor.isReceiving {
-                return (.green, "Listening: the bars are following the music.")
-            } else if audioMonitor.permissionDenied {
-                return (.red, "No permission. Turn on SpotMenu under Screen & System Audio Recording, then quit and reopen SpotMenu.")
+                return (.green, "Listening: the bars are following the music (audio only, no screen access).")
+            } else if audioMonitor.tapRunning {
+                return (.orange, "Connected, but no sound is coming through. Allow SpotMenu under Privacy & Security → Screen & System Audio Recording → System Audio Recording Only, then quit and reopen SpotMenu.")
             } else if let error = audioMonitor.lastError {
                 return (.orange, "Not listening: \(error)")
             } else {
