@@ -171,6 +171,11 @@ class MenuBarPreferencesModel: ObservableObject {
             UserDefaults.standard.set(equalizerBarCount, forKey: "menuBar.equalizerBarCount")
         }
     }
+    @Published var equalizerMirrored: Bool {
+        didSet {
+            UserDefaults.standard.set(equalizerMirrored, forKey: "menuBar.equalizerMirrored")
+        }
+    }
     @Published var equalizerBassBars: Int {
         didSet {
             UserDefaults.standard.set(equalizerBassBars, forKey: "menuBar.equalizerBassBars")
@@ -228,6 +233,8 @@ class MenuBarPreferencesModel: ObservableObject {
             defaults.object(forKey: "menuBar.equalizerFollowsMusic") as? Bool ?? true
         equalizerBarCount = min(10, max(3,
             defaults.object(forKey: "menuBar.equalizerBarCount") as? Int ?? 6))
+        equalizerMirrored =
+            defaults.object(forKey: "menuBar.equalizerMirrored") as? Bool ?? false
         equalizerBassBars = min(10, max(0,
             defaults.object(forKey: "menuBar.equalizerBassBars") as? Int ?? 2))
         equalizerBarWidth = min(5, max(1.5,
