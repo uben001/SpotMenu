@@ -4,13 +4,18 @@ import SwiftUI
 // MARK: - Equalizer bars
 
 /// Bouncing bars in the menu bar. When real audio is available they follow
-/// the music (driven by AudioSpectrumMonitor); otherwise they fall back to a
+/// the music (driven by AudioSpectrumMonitor): a few randomly placed bars
+/// follow only the bass, the rest follow the rest of the music. Otherwise they fall back to a
 /// simulated bounce. They settle to a flat line when playback is paused.
 struct EqualizerBarsView: View {
     let isPlaying: Bool
     let barCount: Int
     let barWidth: CGFloat
     let followMusic: Bool
+    /// How many bars follow only the bass (at random positions).
+    var bassBarCount: Int = 2
+    /// Changing this (e.g. on every new song) reshuffles which bars are bass bars.
+    var shuffleKey: String = ""
 
     @ObservedObject private var monitor = AudioSpectrumMonitor.shared
 
@@ -38,7 +43,8 @@ struct EqualizerBarsView: View {
         Group {
             if usingRealAudio {
                 bars { index in realHeight(for: index) }
-                    .animation(.linear(duration: 1.0 / 30.0), value: monitor.levels)
+                    .animation(.linear(duration: 1.0 / 30.0), value: monitor.restLevels)
+                    .animation(.linear(duration: 1.0 / 30.0), value: monitor.bassLevels)
             } else {
                 TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !isPlaying)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
@@ -63,16 +69,38 @@ struct EqualizerBarsView: View {
         }
     }
 
-    /// Maps the monitor's bands onto however many bars are shown.
-    private func realHeight(for index: Int) -> CGFloat {
-        let levels = monitor.levels
-        guard !levels.isEmpty else { return restHeight }
+    /// Which bar positions are bass bars, chosen at random but stable for a
+    /// given song / bar layout (so bars don't swap roles while you listen).
+    private var bassPositions: [Int] {
         let count = max(barCount, 1)
-        let start = index * levels.count / count
-        let end = max(start + 1, (index + 1) * levels.count / count)
-        let slice = levels[start..<min(end, levels.count)]
-        let value = slice.reduce(0, +) / Float(slice.count)
+        let bassBars = min(max(bassBarCount, 0), count)
+        var generator = SeededGenerator(seed: "\(shuffleKey)|\(count)|\(bassBars)")
+        let shuffled = Array(0..<count).shuffled(using: &generator)
+        return Array(shuffled.prefix(bassBars)).sorted()
+    }
+
+    /// Bass bars take the bass bands; the remaining bars take the rest of
+    /// the spectrum, low to high from left to right.
+    private func realHeight(for index: Int) -> CGFloat {
+        let count = max(barCount, 1)
+        let bass = bassPositions
+        let value: Float
+        if let slot = bass.firstIndex(of: index) {
+            value = sample(monitor.bassLevels, bar: slot, of: bass.count)
+        } else {
+            let others = (0..<count).filter { !bass.contains($0) }
+            let slot = others.firstIndex(of: index) ?? 0
+            value = sample(monitor.restLevels, bar: slot, of: others.count)
+        }
         return restHeight + CGFloat(value) * (Self.maxHeight - restHeight)
+    }
+
+    private func sample(_ levels: [Float], bar: Int, of bars: Int) -> Float {
+        guard !levels.isEmpty, bars > 0 else { return 0 }
+        let start = bar * levels.count / bars
+        let end = max(start + 1, (bar + 1) * levels.count / bars)
+        let slice = levels[min(start, levels.count - 1)..<min(end, levels.count)]
+        return slice.reduce(0, +) / Float(max(slice.count, 1))
     }
 
     private func simulatedHeight(for index: Int, at t: Double) -> CGFloat {
@@ -175,5 +203,30 @@ extension View {
     /// Briefly scales the view up when `active` flips true.
     func pulsing(_ active: Bool) -> some View {
         scaleEffect(active ? 1.25 : 1.0)
+    }
+}
+
+// MARK: - Seeded random
+
+/// Small deterministic random generator (SplitMix64) so the same song always
+/// gets the same bass-bar layout.
+struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+
+    init(seed: String) {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325  // FNV-1a
+        for byte in seed.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        state = hash
+    }
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9e37_79b9_7f4a_7c15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xbf58_476d_1ce4_e5b9
+        z = (z ^ (z >> 27)) &* 0x94d0_49bb_1331_11eb
+        return z ^ (z >> 31)
     }
 }
