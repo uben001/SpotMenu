@@ -1,60 +1,64 @@
 import Accelerate
 import AppKit
 import Combine
-import CoreMedia
-import ScreenCaptureKit
+import CoreAudio
 
-/// Listens to the audio coming out of Spotify / Apple Music (only those apps)
-/// using ScreenCaptureKit, runs an FFT, and publishes band levels (0...1)
-/// that the menu bar equalizer draws.
+/// Listens to the sound coming out of Spotify / Apple Music (only those apps)
+/// using a Core Audio process tap (audio only, no screen access), runs an FFT,
+/// and publishes two sets of levels (0...1):
+///   - `bassLevels`: 30-160 Hz, for the bass bars
+///   - `restLevels`: 160 Hz-12 kHz, for the other bars
 ///
 /// Capture only runs while music is playing; it stops a couple of seconds
 /// after playback pauses so macOS's recording indicator goes away.
-final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
-    SCStreamDelegate
-{
+final class AudioSpectrumMonitor: ObservableObject {
     static let shared = AudioSpectrumMonitor()
 
-    static let bandCount = 10
-    static let musicApps: Set<String> = ["com.spotify.client", "com.apple.Music"]
+    static let bassBandCount = 4
+    static let restBandCount = 8
 
-    /// Smoothed level per band, 0...1.
-    @Published private(set) var levels: [Float] = Array(repeating: 0, count: bandCount)
-    /// True while real audio data is arriving.
+    @Published private(set) var bassLevels: [Float] = Array(repeating: 0, count: bassBandCount)
+    @Published private(set) var restLevels: [Float] = Array(repeating: 0, count: restBandCount)
+    /// True once real (non-silent) sound is arriving.
     @Published private(set) var isReceiving = false
-    /// True if macOS refused screen & system audio recording permission.
-    @Published private(set) var permissionDenied = false
-    /// Last capture error, for the status line in Preferences.
+    /// True while the audio tap is set up and running.
+    @Published private(set) var tapRunning = false
+    /// Last setup error, for the status line in Preferences.
     @Published private(set) var lastError: String?
 
-    private var stream: SCStream?
     private var isStarting = false
     private var lastStartAttempt = Date.distantPast
     private var pendingStop: DispatchWorkItem?
-    private var lastSampleDate = Date.distantPast
+    private var lastSoundDate = Date.distantPast
     private var lastPublish = Date.distantPast
+    private var lastAnalysis = Date.distantPast
     private var silenceTimer: Timer?
 
-    private let audioQueue = DispatchQueue(label: "SpotMenu.AudioSpectrum")
+    // Core Audio objects
+    private var tapID = AudioObjectID(kAudioObjectUnknown)
+    private var aggregateID = AudioObjectID(kAudioObjectUnknown)
+    private var ioProcID: AudioDeviceIOProcID?
+    private var channelCount = 2
+    private var isInterleaved = true
+
+    private let audioQueue = DispatchQueue(label: "SpotMenu.AudioSpectrum", qos: .userInteractive)
 
     // FFT state (only touched on audioQueue)
-    // 2048 samples at 48 kHz = ~23 Hz per bin: enough detail to separate
-    // kick drum / bass from the rest.
-    private let fftSize = 2048
-    private let log2n = vDSP_Length(11)
+    // 4096 samples at 48 kHz = ~12 Hz per bin: enough detail to split the bass.
+    private let fftSize = 4096
+    private let log2n = vDSP_Length(12)
     private var fftSetup: FFTSetup?
     private var window: [Float]
     private var sampleRing: [Float]
-    private var smoothed: [Float] = Array(repeating: 0, count: bandCount)
-    private var peakDb: Float = -30
-    private var bassPeakDb: Float = -30
-    private var bassLevel: Float = 0
     private var sampleRate: Double = 48_000
+    private var bassSmoothed = [Float](repeating: 0, count: bassBandCount)
+    private var restSmoothed = [Float](repeating: 0, count: restBandCount)
+    private var bassPeakDb: Float = -30
+    private var restPeakDb: Float = -30
 
-    private override init() {
-        window = [Float](repeating: 0, count: 2048)
-        sampleRing = [Float](repeating: 0, count: 2048)
-        super.init()
+    private init() {
+        window = [Float](repeating: 0, count: 4096)
+        sampleRing = [Float](repeating: 0, count: 4096)
         fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
     }
@@ -70,101 +74,71 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
         if shouldRun {
             pendingStop?.cancel()
             pendingStop = nil
-            if stream == nil, !isStarting, !permissionDenied,
-                Date().timeIntervalSince(lastStartAttempt) > 8
+            if !tapRunning, !isStarting,
+                Date().timeIntervalSince(lastStartAttempt) > 6
             {
                 start()
             }
-        } else if stream != nil, pendingStop == nil {
+        } else if tapRunning, pendingStop == nil {
             let work = DispatchWorkItem { [weak self] in self?.stop() }
             pendingStop = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
         }
     }
 
-    /// Lets the user retry after granting permission in System Settings.
+    /// Lets the user retry right away (e.g. after changing permissions).
     func resetPermissionState() {
-        permissionDenied = false
         lastError = nil
         lastStartAttempt = .distantPast
     }
 
     private func start() {
+        guard #available(macOS 14.4, *) else {
+            lastError = "Needs macOS 14.4 or newer."
+            return
+        }
         isStarting = true
         lastStartAttempt = Date()
+        defer { isStarting = false }
 
-        Task { @MainActor in
-            defer { self.isStarting = false }
-            do {
-                let content = try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: false
-                )
-                let apps = content.applications.filter {
-                    Self.musicApps.contains($0.bundleIdentifier)
-                }
-                guard let display = content.displays.first, !apps.isEmpty else {
-                    return  // music app not running yet; retry later
-                }
-
-                let filter = SCContentFilter(
-                    display: display,
-                    including: apps,
-                    exceptingWindows: []
-                )
-                let config = SCStreamConfiguration()
-                config.capturesAudio = true
-                config.excludesCurrentProcessAudio = true
-                config.sampleRate = 48_000
-                config.channelCount = 2
-                // We only want audio; keep the video side as tiny as possible.
-                config.width = 2
-                config.height = 2
-                config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-                config.showsCursor = false
-
-                let stream = SCStream(filter: filter, configuration: config, delegate: self)
-                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
-                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: audioQueue)
-                try await stream.startCapture()
-                self.stream = stream
-                self.lastError = nil
-                self.sampleRate = Double(config.sampleRate)
-                self.startSilenceWatch()
-            } catch {
-                // SCStreamError.userDeclined (-3801): no screen & audio recording permission.
-                if (error as NSError).code == SCStreamError.Code.userDeclined.rawValue {
-                    self.permissionDenied = true
-                }
-                self.lastError = error.localizedDescription
-                NSLog("SpotMenu audio capture failed: \(error)")
+        do {
+            try startTap()
+            tapRunning = true
+            lastError = nil
+            startSilenceWatch()
+        } catch let error as TapError {
+            teardown()
+            if case .noMusicApp = error {
+                lastError = nil  // music app hasn't played yet; retry later
+            } else {
+                lastError = error.message
             }
+        } catch {
+            teardown()
+            lastError = error.localizedDescription
         }
     }
 
     private func stop() {
         pendingStop = nil
-        silenceTimer?.invalidate()
-        silenceTimer = nil
-        guard let stream else { return }
-        self.stream = nil
-        Task { try? await stream.stopCapture() }
+        teardown()
         isReceiving = false
-        levels = Array(repeating: 0, count: Self.bandCount)
+        bassLevels = Array(repeating: 0, count: Self.bassBandCount)
+        restLevels = Array(repeating: 0, count: Self.restBandCount)
         audioQueue.async { [weak self] in
             guard let self else { return }
-            self.smoothed = Array(repeating: 0, count: Self.bandCount)
+            self.bassSmoothed = Array(repeating: 0, count: Self.bassBandCount)
+            self.restSmoothed = Array(repeating: 0, count: Self.restBandCount)
             self.sampleRing = [Float](repeating: 0, count: self.fftSize)
-            self.bassLevel = 0
         }
     }
 
-    /// Marks the feed as not receiving if no audio arrived for a while.
+    /// Falls back to the simulated animation if no sound arrives for a while.
     private func startSilenceWatch() {
         silenceTimer?.invalidate()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if self.isReceiving, Date().timeIntervalSince(self.lastSampleDate) > 1.0 {
+            if self.isReceiving, Date().timeIntervalSince(self.lastSoundDate) > 8 {
                 self.isReceiving = false
             }
         }
@@ -172,52 +146,209 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
         silenceTimer = timer
     }
 
-    // MARK: - SCStreamDelegate
+    // MARK: - Core Audio tap
 
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.stream === stream else { return }
-            self.stream = nil
-            self.isReceiving = false
-            self.levels = Array(repeating: 0, count: Self.bandCount)
+    private struct TapError: Error {
+        let message: String
+        static let noMusicApp = TapError(message: "no music app")
+        static func failed(_ what: String, _ status: OSStatus) -> TapError {
+            TapError(message: "\(what) failed (\(status))")
         }
     }
 
-    // MARK: - SCStreamOutput
+    @available(macOS 14.4, *)
+    private func startTap() throws {
+        // 1) Find the audio "process objects" of Spotify / Music.
+        let processes = musicProcessObjects()
+        guard !processes.isEmpty else { throw TapError.noMusicApp }
 
-    func stream(
-        _ stream: SCStream,
-        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-        of type: SCStreamOutputType
-    ) {
-        guard type == .audio, sampleBuffer.isValid else { return }
+        // 2) Create a private tap that mixes their output to stereo.
+        //    .unmuted = you still hear the music normally.
+        let description = CATapDescription(stereoMixdownOfProcesses: processes)
+        description.uuid = UUID()
+        description.name = "SpotMenu Equalizer"
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
 
-        try? sampleBuffer.withAudioBufferList { bufferList, _ in
-            guard let buffer = bufferList.first, let data = buffer.mData else { return }
-            let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-            guard count > 0 else { return }
-            let samples = UnsafeBufferPointer(
-                start: data.assumingMemoryBound(to: Float.self),
-                count: count
-            )
-            self.push(samples)
+        var newTap = AudioObjectID(kAudioObjectUnknown)
+        var status = AudioHardwareCreateProcessTap(description, &newTap)
+        guard status == noErr else { throw TapError.failed("Creating the audio tap", status) }
+        tapID = newTap
+
+        // 3) Read the tap's audio format.
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        status = AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &format)
+        guard status == noErr else { throw TapError.failed("Reading the tap format", status) }
+        let rate = format.mSampleRate > 0 ? format.mSampleRate : 48_000
+        channelCount = max(1, Int(format.mChannelsPerFrame))
+        isInterleaved = (format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+        audioQueue.sync { self.sampleRate = rate }
+
+        // 4) Wrap the tap in a private aggregate device so we can read from it.
+        guard let outputUID = defaultOutputDeviceUID() else {
+            throw TapError(message: "No audio output device found")
         }
+        let aggregate: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "SpotMenu Equalizer Tap",
+            kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceIsStackedKey: false,
+            kAudioAggregateDeviceTapAutoStartKey: true,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [kAudioSubDeviceUIDKey: outputUID]
+            ],
+            kAudioAggregateDeviceTapListKey: [
+                [
+                    kAudioSubTapDriftCompensationKey: true,
+                    kAudioSubTapUIDKey: description.uuid.uuidString,
+                ]
+            ],
+        ]
+        var newAggregate = AudioObjectID(kAudioObjectUnknown)
+        status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &newAggregate)
+        guard status == noErr else { throw TapError.failed("Creating the audio device", status) }
+        aggregateID = newAggregate
+
+        // 5) Receive the audio. The first time, macOS asks for
+        //    "System Audio Recording Only" permission.
+        var procID: AudioDeviceIOProcID?
+        status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, audioQueue) {
+            [weak self] _, inputData, _, _, _ in
+            self?.handleInput(inputData)
+        }
+        guard status == noErr, let procID else {
+            throw TapError.failed("Setting up audio input", status)
+        }
+        ioProcID = procID
+
+        status = AudioDeviceStart(aggregateID, procID)
+        guard status == noErr else { throw TapError.failed("Starting audio", status) }
+    }
+
+    private func teardown() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        if aggregateID != kAudioObjectUnknown {
+            if let ioProcID {
+                AudioDeviceStop(aggregateID, ioProcID)
+                AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
+            }
+            AudioHardwareDestroyAggregateDevice(aggregateID)
+        }
+        if #available(macOS 14.2, *), tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(tapID)
+        }
+        ioProcID = nil
+        aggregateID = AudioObjectID(kAudioObjectUnknown)
+        tapID = AudioObjectID(kAudioObjectUnknown)
+        tapRunning = false
+    }
+
+    /// Audio process objects belonging to Spotify or Apple Music (including
+    /// helper processes such as Spotify's).
+    @available(macOS 14.2, *)
+    private func musicProcessObjects() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr,
+            size > 0
+        else { return [] }
+
+        var objects = [AudioObjectID](
+            repeating: 0,
+            count: Int(size) / MemoryLayout<AudioObjectID>.size
+        )
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr
+        else { return [] }
+
+        return objects.filter { object in
+            guard let bundleID = processBundleID(object) else { return false }
+            return bundleID.hasPrefix("com.spotify.") || bundleID == "com.apple.Music"
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private func processBundleID(_ object: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyBundleID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: CFString? = nil
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(object, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr, let value else { return nil }
+        return value as String
+    }
+
+    private func defaultOutputDeviceUID() -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr else { return nil }
+
+        address.mSelector = kAudioDevicePropertyDeviceUID
+        var uid: CFString? = nil
+        size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &uid) {
+            AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr, let uid else { return nil }
+        return uid as String
     }
 
     // MARK: - Analysis (audioQueue)
 
-    private func push(_ samples: UnsafeBufferPointer<Float>) {
-        // Slide the newest samples into the analysis window.
-        if samples.count >= fftSize {
-            sampleRing = Array(samples.suffix(fftSize))
+    private func handleInput(_ inputData: UnsafePointer<AudioBufferList>) {
+        let buffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: inputData)
+        )
+        guard let buffer = buffers.first, let data = buffer.mData else { return }
+        let floats = data.assumingMemoryBound(to: Float.self)
+        let total = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+        guard total > 0 else { return }
+
+        // Use the left channel (or the only channel).
+        let stride = (isInterleaved && channelCount > 1) ? channelCount : 1
+        let frames = total / stride
+        var mono = [Float](repeating: 0, count: frames)
+        for i in 0..<frames { mono[i] = floats[i * stride] }
+
+        if frames >= fftSize {
+            sampleRing = Array(mono.suffix(fftSize))
         } else {
-            sampleRing.removeFirst(samples.count)
-            sampleRing.append(contentsOf: samples)
+            sampleRing.removeFirst(frames)
+            sampleRing.append(contentsOf: mono)
         }
-        analyze()
+
+        // ~60 analyses per second is plenty for the menu bar.
+        let now = Date()
+        guard now.timeIntervalSince(lastAnalysis) >= 1.0 / 60.0 else { return }
+        lastAnalysis = now
+        analyze(now: now)
     }
 
-    private func analyze() {
+    private func analyze(now: Date) {
         guard let fftSetup else { return }
         let n = fftSize
         let half = n / 2
@@ -249,68 +380,62 @@ final class AudioSpectrumMonitor: NSObject, ObservableObject, SCStreamOutput,
         }
 
         let binHz = Float(sampleRate) / Float(n)
-        func energy(_ lowHz: Float, _ highHz: Float) -> Float {
+        func bandDb(_ lowHz: Float, _ highHz: Float) -> Float {
             var i0 = Int(lowHz / binHz)
             var i1 = Int(highHz / binHz)
             i0 = max(1, min(i0, half - 1))
             i1 = max(i0 + 1, min(i1, half))
             var sum: Float = 0
             for i in i0..<i1 { sum += mags[i] }
-            return sum / Float(i1 - i0)
+            return 10 * log10f(sum / Float(i1 - i0) + 1e-12)
+        }
+        func logBands(_ count: Int, _ lowHz: Float, _ highHz: Float, tilt: Float) -> [Float] {
+            (0..<count).map { b in
+                let f0 = lowHz * powf(highHz / lowHz, Float(b) / Float(count))
+                let f1 = lowHz * powf(highHz / lowHz, Float(b + 1) / Float(count))
+                return bandDb(f0, f1) + Float(b) * tilt
+            }
         }
 
-        // 1) Bass / kick envelope (40-160 Hz). This is what the bars mainly
-        //    follow, so every kick drum and bass note makes them jump.
-        let bassDb = 10 * log10f(energy(40, 160) + 1e-12)
-        bassPeakDb = max(bassDb, bassPeakDb - 0.12)
-        let bassRange: Float = 20
-        let bassTarget: Float = max(0, min(1, (bassDb - (bassPeakDb - bassRange)) / bassRange))
-        // Snappy: jump up instantly on a hit, fall back quickly between hits.
-        let bassK: Float = bassTarget > bassLevel ? 0.85 : 0.30
-        bassLevel += (bassTarget - bassLevel) * bassK
+        // Bass bars: 30-160 Hz. Tight range + snappy motion so kicks pop.
+        let bassDb = logBands(Self.bassBandCount, 30, 160, tilt: 0)
+        // Other bars: 160 Hz-12 kHz, with a gentle tilt so treble isn't tiny.
+        let restDb = logBands(Self.restBandCount, 160, 12_000, tilt: 2.0)
 
-        // 2) Spectrum bands, log-spaced from 30 Hz to 8 kHz (most bars sit in
-        //    the low end), used for a bit of variety between bars.
-        let lowHz: Float = 30
-        let highHz: Float = 8_000
-        let bands = Self.bandCount
-        var bandDb = [Float](repeating: -140, count: bands)
-        for b in 0..<bands {
-            let f0 = lowHz * powf(highHz / lowHz, Float(b) / Float(bands))
-            let f1 = lowHz * powf(highHz / lowHz, Float(b + 1) / Float(bands))
-            bandDb[b] = 10 * log10f(energy(f0, f1) + 1e-12)
+        let loudest = max(bassDb.max() ?? -140, restDb.max() ?? -140)
+        let silent = loudest < -75
+
+        bassPeakDb = max(bassDb.max() ?? -140, bassPeakDb - 0.12)
+        restPeakDb = max(restDb.max() ?? -140, restPeakDb - 0.15)
+
+        for b in 0..<Self.bassBandCount {
+            let range: Float = 22
+            let target: Float = silent
+                ? 0 : max(0, min(1, (bassDb[b] - (bassPeakDb - range)) / range))
+            let k: Float = target > bassSmoothed[b] ? 0.85 : 0.3
+            bassSmoothed[b] += (target - bassSmoothed[b]) * k
+        }
+        for b in 0..<Self.restBandCount {
+            let range: Float = 40
+            let target: Float = silent
+                ? 0 : max(0, min(1, (restDb[b] - (restPeakDb - range)) / range))
+            let k: Float = target > restSmoothed[b] ? 0.65 : 0.18
+            restSmoothed[b] += (target - restSmoothed[b]) * k
         }
 
-        let loudest = max(bandDb.max() ?? -140, bassDb)
-        let silent = loudest < -70
-        if silent { bassLevel = 0 }
-
-        peakDb = max(bandDb.max() ?? -140, peakDb - 0.15)
-        let range: Float = 36
-        let floorDb = peakDb - range
-
-        for b in 0..<bands {
-            let bandLevel: Float = max(0, min(1, (bandDb[b] - floorDb) / range))
-            // Bass drives every bar (strongest on the left/low bars);
-            // the band's own level adds some movement on top.
-            let bassWeight: Float = 1.0 - 0.35 * Float(b) / Float(bands - 1)
-            let mixed = 0.65 * bassLevel * bassWeight + 0.35 * bandLevel
-            let target: Float = silent ? 0 : max(0, min(1, mixed))
-            let current = smoothed[b]
-            // Fast attack, quick release so the beat reads clearly.
-            let k: Float = target > current ? 0.8 : 0.28
-            smoothed[b] = current + (target - current) * k
-        }
-
-        let now = Date()
         guard now.timeIntervalSince(lastPublish) >= 1.0 / 30.0 else { return }
         lastPublish = now
-        let snapshot = smoothed
+        let bass = bassSmoothed
+        let rest = restSmoothed
+        let heardSound = !silent
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.lastSampleDate = now
-            self.levels = snapshot
-            if !self.isReceiving { self.isReceiving = true }
+            if heardSound {
+                self.lastSoundDate = now
+                if !self.isReceiving { self.isReceiving = true }
+            }
+            self.bassLevels = bass
+            self.restLevels = rest
         }
     }
 }
