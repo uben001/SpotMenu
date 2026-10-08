@@ -108,7 +108,7 @@ final class AudioSpectrumMonitor: ObservableObject {
             startSilenceWatch()
         } catch let error as TapError {
             teardown()
-            if case .noMusicApp = error {
+            if error.message == TapError.noMusicApp.message {
                 lastError = nil  // music app hasn't played yet; retry later
             } else {
                 lastError = error.message
