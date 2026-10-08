@@ -16,6 +16,9 @@ struct EqualizerBarsView: View {
     var bassBarCount: Int = 2
     /// Changing this (e.g. on every new song) reshuffles which bars are bass bars.
     var shuffleKey: String = ""
+    /// Mirrored style: bars grow up *and* down from the middle line and shrink
+    /// back to the middle when it's quiet.
+    var mirrored: Bool = false
 
     @ObservedObject private var monitor = AudioSpectrumMonitor.shared
 
@@ -55,13 +58,13 @@ struct EqualizerBarsView: View {
         .frame(
             width: Self.width(barCount: barCount, barWidth: barWidth),
             height: Self.maxHeight,
-            alignment: .bottom
+            alignment: mirrored ? .center : .bottom
         )
         .animation(.easeOut(duration: 0.3), value: isPlaying)
     }
 
     private func bars(_ height: @escaping (Int) -> CGFloat) -> some View {
-        HStack(alignment: .bottom, spacing: Self.spacing(for: barWidth)) {
+        HStack(alignment: mirrored ? .center : .bottom, spacing: Self.spacing(for: barWidth)) {
             ForEach(0..<max(barCount, 1), id: \.self) { index in
                 Rectangle()
                     .frame(width: barWidth, height: height(index))
