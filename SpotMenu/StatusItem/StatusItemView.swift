@@ -74,7 +74,8 @@ struct StatusItemView: View {
                     barWidth: CGFloat(prefs.equalizerBarWidth),
                     followMusic: prefs.equalizerFollowsMusic,
                     bassBarCount: prefs.equalizerBassBars,
-                    shuffleKey: trackKey
+                    shuffleKey: trackKey,
+                    mirrored: prefs.equalizerMirrored
                 )
                 .pulsing(pulse)
             } else if showNote {
