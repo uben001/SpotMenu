@@ -72,7 +72,9 @@ struct StatusItemView: View {
                     isPlaying: model.isPlaying,
                     barCount: prefs.equalizerBarCount,
                     barWidth: CGFloat(prefs.equalizerBarWidth),
-                    followMusic: prefs.equalizerFollowsMusic
+                    followMusic: prefs.equalizerFollowsMusic,
+                    bassBarCount: prefs.equalizerBassBars,
+                    shuffleKey: trackKey
                 )
                 .pulsing(pulse)
             } else if showNote {
